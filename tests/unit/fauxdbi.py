@@ -469,10 +469,10 @@ class FauxClient:
             else:
                 raise google.api_core.exceptions.NotFound(table_ref)
 
-    def list_datasets(self, project):
+    def list_datasets(self, project="myproject"):
         return [
-            google.cloud.bigquery.Dataset("myproject.mydataset"),
-            google.cloud.bigquery.Dataset("myproject.yourdataset"),
+            google.cloud.bigquery.Dataset(f"{project}.mydataset"),
+            google.cloud.bigquery.Dataset(f"{project}.yourdataset"),
         ]
 
     def list_tables(self, dataset, page_size):
