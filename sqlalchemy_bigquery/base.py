@@ -27,7 +27,7 @@ import uuid
 
 from google import auth
 import google.api_core.exceptions
-from google.cloud.bigquery import dbapi
+from google.cloud.bigquery import dbapi, ConnectionProperty
 from google.cloud.bigquery.table import (
     RangePartitioning,
     TableReference,
@@ -61,6 +61,7 @@ import re
 from .parse_url import parse_url
 from . import _helpers, _struct, _types
 import sqlalchemy_bigquery_vendored.sqlalchemy.postgresql.base as vendored_postgresql
+from google.cloud.bigquery import QueryJobConfig
 
 # Illegal characters is intended to be all characters that are not explicitly
 # allowed as part of the flexible column names.
@@ -68,6 +69,13 @@ import sqlalchemy_bigquery_vendored.sqlalchemy.postgresql.base as vendored_postg
 FIELD_ILLEGAL_CHARACTERS = re.compile(r'[!"$()*,./;?@[\\\]^{}~\n]+', re.ASCII)
 
 TABLE_VALUED_ALIAS_ALIASES = "bigquery_table_valued_alias_aliases"
+
+import logging
+logging.basicConfig(format='%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
+    datefmt='%Y-%m-%d:%H:%M:%S',
+    level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def assert_(cond, message="Assertion failed"):  # pragma: NO COVER
@@ -1119,19 +1127,23 @@ class BigQueryDialect(DefaultDialect):
         return "{}.{}".format(table.reference.dataset_id, table.table_id)
 
     @staticmethod
-    def _add_default_dataset_to_job_config(job_config, project_id, dataset_id):
+    def _add_default_dataset_to_job_config(job_config: QueryJobConfig, project_id, dataset_id):
         # If dataset_id is set, then we know the job_config isn't None
+        dataset = ConnectionProperty(key='dataset_project_id', value=project_id)
+        job_config.connection_properties = [ dataset ]
         if dataset_id:
             # If project_id is missing, use default project_id for the current environment
             if not project_id:
                 _, project_id = auth.default()
 
             job_config.default_dataset = "{}.{}".format(project_id, dataset_id)
+            logger.error(f"Set default dataset to {job_config.default_dataset}"'')
 
     def do_execute(self, cursor, statement, parameters, context=None):
         kwargs = {}
         if context is not None and context.execution_options.get("job_config"):
             kwargs["job_config"] = context.execution_options.get("job_config")
+        logger.error(f'Executing statement: {statement}')
         cursor.execute(statement, parameters, **kwargs)
 
     def create_connect_args(self, url):
@@ -1153,12 +1165,13 @@ class BigQueryDialect(DefaultDialect):
         self.credentials_path = credentials_path or self.credentials_path
         self.credentials_base64 = credentials_base64 or self.credentials_base64
         self.dataset_id = dataset_id
+        from google.cloud.bigquery import QueryJobConfig
+        if default_query_job_config is None:
+            default_query_job_config = QueryJobConfig()
         self._add_default_dataset_to_job_config(
             default_query_job_config, project_id, dataset_id
         )
         self.project_id = project_id
-        if self.billing_project_id is None:
-            self.billing_project_id = project_id
 
         if user_supplied_client:
             # The user is expected to supply a client with
@@ -1173,6 +1186,12 @@ class BigQueryDialect(DefaultDialect):
                 location=self.location,
                 default_query_job_config=default_query_job_config,
             )
+            # If the user specified `bigquery://` we need to set the project_id
+            # from the client
+            if self.project_id is None:
+                self.project_id = client.project
+            if self.billing_project_id is None:
+                self.billing_project_id = client.project
             return ([], {"client": client})
 
     def _get_table_or_view_names(self, connection, item_types, schema=None):
@@ -1206,8 +1225,7 @@ class BigQueryDialect(DefaultDialect):
                 pass
         return result
 
-    @staticmethod
-    def _split_table_name(full_table_name):
+    def _split_table_name(self, full_table_name):
         # Split full_table_name to get project, dataset and table name
         dataset = None
         table_name = None
@@ -1217,6 +1235,8 @@ class BigQueryDialect(DefaultDialect):
         if len(table_name_split) == 1:
             table_name = full_table_name
         elif len(table_name_split) == 2:
+            if self.project_id != self.billing_project_id:
+                project = self.project_id
             dataset, table_name = table_name_split
         elif len(table_name_split) == 3:
             project, dataset, table_name = table_name_split
@@ -1285,11 +1305,14 @@ class BigQueryDialect(DefaultDialect):
 
         client = connection.connection._client
 
+        # table_ref = self._table_reference(schema, table_name, client.project)
         table_ref = self._table_reference(schema, table_name, self.project_id)
         try:
             table = client.get_table(table_ref)
         except NotFound:
+            logger.error(f"Table {table_name} not found")
             raise NoSuchTableError(table_name)
+        logger.error(f"Table {table_name} found {table}")
         return table
 
     def has_table(self, connection, table_name, schema=None, **kw):
@@ -1315,7 +1338,10 @@ class BigQueryDialect(DefaultDialect):
 
     def get_columns(self, connection, table_name, schema=None, **kw):
         table = self._get_table(connection, table_name, schema)
-        return _types.get_columns(table.schema)
+        types = _types.get_columns(table.schema)
+        logger.error(f"Table {table_name} found {table} with types {repr(types)}")
+        return types
+
 
     def get_table_comment(self, connection, table_name, schema=None, **kw):
         table = self._get_table(connection, table_name, schema)
