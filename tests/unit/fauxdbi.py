@@ -355,7 +355,7 @@ class attrdict(dict):
 class FauxClient:
     def __init__(self, project_id=None, default_query_job_config=None, *args, **kw):
         if project_id is None:
-            if default_query_job_config is not None:
+            if default_query_job_config is not None and default_query_job_config.default_dataset:
                 project_id = default_query_job_config.default_dataset.project
             else:
                 project_id = "authproj"  # we would still have gotten it from auth.
@@ -469,10 +469,10 @@ class FauxClient:
             else:
                 raise google.api_core.exceptions.NotFound(table_ref)
 
-    def list_datasets(self):
+    def list_datasets(self, project="myproject"):
         return [
-            google.cloud.bigquery.Dataset("myproject.mydataset"),
-            google.cloud.bigquery.Dataset("myproject.yourdataset"),
+            google.cloud.bigquery.Dataset(f"{project}.mydataset"),
+            google.cloud.bigquery.Dataset(f"{project}.yourdataset"),
         ]
 
     def list_tables(self, dataset, page_size):
